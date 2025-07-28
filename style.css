@@ -1,0 +1,374 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #2c2c2c;
+    color: white;
+    min-height: 100vh;
+    overflow: hidden;
+}
+
+.app-container {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Top Navigation */
+.top-nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 16px 16px;
+    background: #2c2c2c;
+    position: relative;
+}
+
+.nav-btn {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 24px;
+    cursor: pointer;
+    padding: 8px;
+    border-radius: 50%;
+    transition: background-color 0.2s;
+}
+
+.nav-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.nav-icon {
+    display: block;
+    line-height: 1;
+}
+
+/* Step Indicators */
+.step-indicators {
+    display: flex;
+    gap: 32px;
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+.step-tab {
+    background: none;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 8px;
+    transition: color 0.2s;
+    position: relative;
+}
+
+.step-tab.active {
+    color: white;
+}
+
+.step-tab.active::after {
+    content: '';
+    position: absolute;
+    bottom: -8px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 20px;
+    height: 3px;
+    background: #10b981;
+    border-radius: 2px;
+}
+
+.step-icon {
+    width: 24px;
+    height: 24px;
+    object-fit: contain;
+    transition: transform 0.2s ease;
+}
+
+.step-tab.active .step-icon {
+    transform: scale(1.2);
+}
+
+.step-label {
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Status Message */
+.status-message {
+    text-align: center;
+    padding: 16px 24px;
+    font-size: 16px;
+    line-height: 1.4;
+    color: white;
+    background: #2c2c2c;
+}
+
+/* Video Container */
+.video-container {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    position: relative;
+}
+
+.document-frame {
+    position: relative;
+    width: 100%;
+    max-width: 400px;
+    height: 280px;
+    border: 2px dashed #10b981;
+    border-radius: 12px;
+    overflow: hidden;
+    background: rgba(16, 185, 129, 0.1);
+}
+
+#cameraVideo {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 10px;
+}
+
+#confirmImage {
+    width: 100%;
+    height: 100%;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    border-radius: 10px;
+}
+
+/* Capture Section */
+.capture-section {
+    padding: 24px;
+    display: flex;
+    justify-content: center;
+    background: #2c2c2c;
+}
+
+.capture-btn {
+    width: 80px;
+    height: 80px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    font-size: 32px;
+}
+
+.capture-btn:hover:not(:disabled) {
+    transform: scale(1.05);
+}
+
+.capture-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.capture-icon {
+    width: 48px;
+    height: 48px;
+    object-fit: contain;
+}
+
+/* Modal */
+.modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.2);
+    display: flex;
+    align-items: flex-end;
+    z-index: 1000;
+}
+
+.modal-content {
+    background: white;
+    border-radius: 20px 20px 0 0;
+    width: 100%;
+    max-height: 90vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.modal-header {
+    padding: 24px 24px 16px;
+    text-align: center;
+    color: #333;
+    font-size: 16px;
+    font-weight: 500;
+    border-bottom: 1px solid #eee;
+}
+
+.modal-body {
+    flex: 1;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: #f8f9fa;
+}
+
+.detection-warning {
+    background: #fef3c7;
+    border: 1px solid #f59e0b;
+    border-radius: 8px;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 300px;
+    width: 100%;
+}
+
+.warning-icon {
+    font-size: 16px;
+    flex-shrink: 0;
+}
+
+.warning-text {
+    color: #92400e;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.3;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 12px;
+    padding: 20px 24px 32px;
+}
+
+.btn {
+    flex: 1;
+    padding: 16px;
+    border: none;
+    border-radius: 12px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-secondary {
+    background: #f3f4f6;
+    color: #374151;
+}
+
+.btn-secondary:hover {
+    background: #e5e7eb;
+}
+
+.btn-success {
+    background: #10b981;
+    color: white;
+}
+
+.btn-success:hover {
+    background: #059669;
+}
+
+/* Results (hidden by default) */
+.results {
+    display: none;
+}
+
+/* Responsive Design */
+@media (max-width: 480px) {
+    .top-nav {
+        padding: 16px 12px 12px;
+    }
+    
+    .step-indicators {
+        gap: 24px;
+    }
+    
+    .step-icon {
+        font-size: 18px;
+    }
+    
+    .step-label {
+        font-size: 11px;
+    }
+    
+    .status-message {
+        padding: 12px 16px;
+        font-size: 14px;
+    }
+    
+    .video-container {
+        padding: 16px;
+    }
+    
+    .document-frame {
+        max-width: 350px;
+        height: 240px;
+    }
+    
+    .capture-btn {
+        width: 70px;
+        height: 70px;
+        font-size: 28px;
+    }
+    
+    .modal-header {
+        padding: 20px 20px 12px;
+        font-size: 15px;
+    }
+    
+    .modal-body {
+        padding: 16px;
+    }
+    
+    .modal-actions {
+        padding: 16px 20px 24px;
+        gap: 8px;
+    }
+    
+    .btn {
+        padding: 14px;
+        font-size: 15px;
+    }
+}
+
+/* Landscape orientation */
+@media (orientation: landscape) and (max-height: 500px) {
+    .video-container {
+        padding: 10px;
+    }
+    
+    .document-frame {
+        height: 150px;
+    }
+    
+    .capture-section {
+        padding: 16px;
+    }
+    
+    .capture-btn {
+        width: 60px;
+        height: 60px;
+        font-size: 24px;
+    }
+}
