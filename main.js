@@ -148,7 +148,7 @@ function handleCapture(result) {
                 captureBtn.style.display = '';
             } else {
                 backResult = result;
-                updateStatus('Ambos os lados foram capturados! Verifique o console para os resultados.');
+                updateStatus('Ambos os lados foram capturados com sucesso!');
                 setTimeout(() => {
                     currentStep = 'front';
                     frontResult = null;
@@ -199,7 +199,7 @@ backTab.addEventListener('click', () => {
     if (currentStep !== 'back' && frontResult) {
         currentStep = 'back';
         updateStepUI();
-}
+    }
 });
 
 // Capture button event listener

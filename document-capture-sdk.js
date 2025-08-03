@@ -41,6 +41,7 @@ class DocumentCapture {
                     width: { ideal: this.options.width },
                     height: { ideal: this.options.height },
                     facingMode: 'environment',
+                    // Enhanced mobile focus constraints
                     focusMode: 'continuous',
                     exposureMode: 'continuous',
                     whiteBalanceMode: 'continuous'
@@ -51,11 +52,77 @@ class DocumentCapture {
             this.video.srcObject = this.stream;
             this.isCapturing = true;
             
+            // Add tap-to-focus for mobile devices
+            this.setupTapToFocus();
+            
             return true;
         } catch (error) {
             this.handleError('Failed to access camera: ' + error.message);
             return false;
         }
+    }
+
+    // Setup tap-to-focus functionality for mobile devices
+    setupTapToFocus() {
+        if (!this.video) return;
+        
+        this.video.addEventListener('click', async (event) => {
+            const rect = this.video.getBoundingClientRect();
+            const x = (event.clientX - rect.left) / rect.width;
+            const y = (event.clientY - rect.top) / rect.height;
+            
+            try {
+                const track = this.stream.getVideoTracks()[0];
+                const capabilities = track.getCapabilities();
+                
+                if (capabilities.focusMode && capabilities.focusMode.includes('single-shot')) {
+                    await track.applyConstraints({
+                        advanced: [{
+                            focusMode: 'single-shot',
+                            pointsOfInterest: [{x: x, y: y}]
+                        }]
+                    });
+                    
+                    // Visual feedback
+                    this.showFocusIndicator(event.clientX, event.clientY);
+                }
+                            } catch (error) {
+                    // Tap-to-focus not supported on this device
+                }
+        });
+    }
+
+    // Show visual focus indicator
+    showFocusIndicator(x, y) {
+        const indicator = document.createElement('div');
+        indicator.style.cssText = `
+            position: absolute;
+            left: ${x - 25}px;
+            top: ${y - 25}px;
+            width: 50px;
+            height: 50px;
+            border: 2px solid #fff;
+            border-radius: 50%;
+            pointer-events: none;
+            animation: focusPulse 0.6s ease-out;
+            z-index: 1000;
+        `;
+        
+        // Add animation
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes focusPulse {
+                0% { transform: scale(1.5); opacity: 1; }
+                100% { transform: scale(1); opacity: 0; }
+            }
+        `;
+        document.head.appendChild(style);
+        
+        document.body.appendChild(indicator);
+        setTimeout(() => {
+            document.body.removeChild(indicator);
+            document.head.removeChild(style);
+        }, 600);
     }
 
     async captureDocument() {
@@ -125,7 +192,7 @@ class DocumentCapture {
         return this.detectDocumentSimple(imageData);
     }
 
-    // Enhanced detectDocumentWithOpenCV method
+    // Robust document detection with OpenCV
     async detectDocumentWithOpenCV(imageData) {
         try {
             const { data, width, height } = imageData;
@@ -137,40 +204,20 @@ class DocumentCapture {
             // Convert RGBA to RGB
             const srcRGB = new cv.Mat();
             cv.cvtColor(src, srcRGB, cv.COLOR_RGBA2RGB);
+
+            // Multi-method detection approach
+            const edgeResult = this.detectByEnhancedEdges(srcRGB);
+            const colorResult = this.detectByColorSegmentation(srcRGB);
+            const gradientResult = this.detectByGradients(srcRGB);
             
-            // Convert to grayscale
-            const gray = new cv.Mat();
-            cv.cvtColor(srcRGB, gray, cv.COLOR_RGB2GRAY);
-            // --- Preprocessing Enhancements ---
-            // 1. Adaptive Thresholding (less aggressive for mobile)
-            const adaptive = new cv.Mat();
-            cv.adaptiveThreshold(gray, adaptive, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 15, 2);
-            // 2. Smaller Gaussian Blur (3x3 for mobile)
-            const blurred = new cv.Mat();
-            const ksize = new cv.Size(3, 3);
-            cv.GaussianBlur(adaptive, blurred, ksize, 0);
-            // Edge detection using Canny (adjusted for mobile)
-            const edges = new cv.Mat();
-            cv.Canny(blurred, edges, 30, 100);
-            
-            // Morphological operations (gentler for mobile)
-            const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2));
-            const closedFinal = new cv.Mat();
-            cv.morphologyEx(edges, closedFinal, cv.MORPH_CLOSE, kernel);
-            
-            // Find contours
-            const contours = new cv.MatVector();
-            const hierarchy = new cv.Mat();
-            cv.findContours(closedFinal, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-            
-            // Find the largest quadrilateral contour
-            const documentContour = this.findLargestQuadrilateral(contours, width, height);
+            // Combine results using confidence scoring
+            const finalResult = this.combineDetectionResults([edgeResult, colorResult, gradientResult], width, height);
             
             let bounds = null;
             let perspectiveTransform = null;
             
-            if (documentContour) {
-                const rect = cv.boundingRect(documentContour);
+            if (finalResult.documentContour) {
+                const rect = cv.boundingRect(finalResult.documentContour);
                 bounds = {
                     x: rect.x,
                     y: rect.y,
@@ -178,33 +225,292 @@ class DocumentCapture {
                     height: rect.height
                 };
                 
-                perspectiveTransform = this.calculatePerspectiveTransform(documentContour, width, height);
+                perspectiveTransform = this.calculatePerspectiveTransform(finalResult.documentContour, width, height);
             }
             
             // Clean up
             src.delete();
             srcRGB.delete();
-            gray.delete();
-            adaptive.delete();
-            blurred.delete();
-            edges.delete();
-            kernel.delete();
-            closedFinal.delete();
-            contours.delete();
-            hierarchy.delete();
-            if (documentContour) {
-                documentContour.delete();
-            }
+            this.cleanupDetectionResults([edgeResult, colorResult, gradientResult, finalResult]);
             
             return {
                 bounds,
                 perspectiveTransform,
-                hasDocument: !!documentContour
+                hasDocument: !!finalResult.documentContour,
+                confidence: finalResult.confidence
             };
             
         } catch (error) {
-            console.error('OpenCV document detection error:', error);
             return this.detectDocumentSimple(imageData);
+        }
+    }
+  
+    // Method 1: Enhanced Edge Detection with Advanced Noise Suppression
+    detectByEnhancedEdges(srcRGB) {
+        const gray = new cv.Mat();
+        cv.cvtColor(srcRGB, gray, cv.COLOR_RGB2GRAY);
+        
+        // Step 1: Adaptive Contrast Enhancement (CLAHE or fallback)
+        const enhanced = new cv.Mat();
+        try {
+            const clahe = new cv.CLAHE(2.0, new cv.Size(8, 8));
+            clahe.apply(gray, enhanced);
+            clahe.delete();
+        } catch (error) {
+            cv.equalizeHist(gray, enhanced);
+        }
+        
+        // Step 2: Advanced Noise Reduction - Bilateral Filter
+        const denoised = new cv.Mat();
+        try {
+            cv.bilateralFilter(enhanced, denoised, 9, 75, 75);
+        } catch (error) {
+            cv.GaussianBlur(enhanced, denoised, new cv.Size(5, 5), 0);
+        }
+        
+        // Step 3: Multi-scale Edge Detection
+        const edges1 = new cv.Mat();
+        const edges2 = new cv.Mat();
+        const edges3 = new cv.Mat();
+        
+        // Different scales to catch various edge types
+        cv.Canny(denoised, edges1, 50, 150);  // Fine edges
+        cv.Canny(denoised, edges2, 30, 100);  // Medium edges  
+        cv.Canny(denoised, edges3, 80, 200);  // Strong edges only
+        
+        // Combine edge maps
+        const combinedEdges = new cv.Mat();
+        cv.bitwise_or(edges1, edges2, combinedEdges);
+        cv.bitwise_or(combinedEdges, edges3, combinedEdges);
+        
+        // Step 4: Morphological noise suppression
+        const kernel1 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+        const opened = new cv.Mat();
+        cv.morphologyEx(combinedEdges, opened, cv.MORPH_OPEN, kernel1); // Remove small noise
+        
+        const kernel2 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+        const closed = new cv.Mat();
+        cv.morphologyEx(opened, closed, cv.MORPH_CLOSE, kernel2); // Connect broken lines
+        
+        // Find contours
+        const contours = new cv.MatVector();
+        const hierarchy = new cv.Mat();
+        cv.findContours(closed, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        
+        // Clean up intermediate matrices
+        gray.delete();
+        enhanced.delete();
+        denoised.delete();
+        edges1.delete();
+        edges2.delete();
+        edges3.delete();
+        combinedEdges.delete();
+        opened.delete();
+        closed.delete();
+        kernel1.delete();
+        kernel2.delete();
+        hierarchy.delete();
+        
+        return {
+            contours,
+            confidence: 0.7
+        };
+    }
+
+    // Method 2: Color-based Document Segmentation
+    detectByColorSegmentation(srcRGB) {
+        // Convert to different color spaces for better separation
+        const hsv = new cv.Mat();
+        const lab = new cv.Mat();
+        cv.cvtColor(srcRGB, hsv, cv.COLOR_RGB2HSV);
+        cv.cvtColor(srcRGB, lab, cv.COLOR_RGB2Lab);
+        
+        // Create mask for document-like colors (typically lighter)
+        const hsvChannels = new cv.MatVector();
+        const labChannels = new cv.MatVector();
+        cv.split(hsv, hsvChannels);
+        cv.split(lab, labChannels);
+        
+        // Use L channel from LAB (lightness) and V channel from HSV (brightness)
+        const lChannel = labChannels.get(0);  // Lightness
+        const vChannel = hsvChannels.get(2);  // Value/Brightness
+        
+        // Adaptive thresholding on lightness
+        const lightMask = new cv.Mat();
+        cv.adaptiveThreshold(lChannel, lightMask, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, 15, 5);
+        
+        // Create brightness mask
+        const brightMask = new cv.Mat();
+        cv.threshold(vChannel, brightMask, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+        
+        // Combine masks
+        const combinedMask = new cv.Mat();
+        cv.bitwise_and(lightMask, brightMask, combinedMask);
+        
+        // Morphological operations to clean up the mask
+        const kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(7, 7));
+        const cleaned = new cv.Mat();
+        cv.morphologyEx(combinedMask, cleaned, cv.MORPH_CLOSE, kernel);
+        cv.morphologyEx(cleaned, cleaned, cv.MORPH_OPEN, kernel);
+        
+        // Find contours on the cleaned mask
+        const contours = new cv.MatVector();
+        const hierarchy = new cv.Mat();
+        cv.findContours(cleaned, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        
+        // Clean up
+        hsv.delete();
+        lab.delete();
+        hsvChannels.delete();
+        labChannels.delete();
+        lChannel.delete();
+        vChannel.delete();
+        lightMask.delete();
+        brightMask.delete();
+        combinedMask.delete();
+        cleaned.delete();
+        kernel.delete();
+        hierarchy.delete();
+        
+        return {
+            contours,
+            confidence: 0.6
+        };
+    }
+
+    // Method 3: Gradient-based Detection
+    detectByGradients(srcRGB) {
+        const gray = new cv.Mat();
+        cv.cvtColor(srcRGB, gray, cv.COLOR_RGB2GRAY);
+        
+        // Apply Gaussian blur to reduce noise
+        const blurred = new cv.Mat();
+        cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+        
+        // Calculate gradients using Sobel operators
+        const gradX = new cv.Mat();
+        const gradY = new cv.Mat();
+        cv.Sobel(blurred, gradX, cv.CV_16S, 1, 0, 3);
+        cv.Sobel(blurred, gradY, cv.CV_16S, 0, 1, 3);
+        
+        // Convert to absolute values
+        const absGradX = new cv.Mat();
+        const absGradY = new cv.Mat();
+        cv.convertScaleAbs(gradX, absGradX);
+        cv.convertScaleAbs(gradY, absGradY);
+        
+        // Combine gradients
+        const gradMagnitude = new cv.Mat();
+        cv.addWeighted(absGradX, 0.5, absGradY, 0.5, 0, gradMagnitude);
+        
+        // Threshold gradient magnitude
+        const gradThresh = new cv.Mat();
+        cv.threshold(gradMagnitude, gradThresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+        
+        // Morphological operations
+        const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+        const gradClosed = new cv.Mat();
+        cv.morphologyEx(gradThresh, gradClosed, cv.MORPH_CLOSE, kernel);
+        
+        // Find contours
+        const contours = new cv.MatVector();
+        const hierarchy = new cv.Mat();
+        cv.findContours(gradClosed, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        
+        // Clean up
+        gray.delete();
+        blurred.delete();
+        gradX.delete();
+        gradY.delete();
+        absGradX.delete();
+        absGradY.delete();
+        gradMagnitude.delete();
+        gradThresh.delete();
+        gradClosed.delete();
+        kernel.delete();
+        hierarchy.delete();
+        
+        return {
+            contours,
+            confidence: 0.5
+        };
+    }
+
+    // Combine detection results using confidence scoring
+    combineDetectionResults(results, width, height) {
+        let bestContour = null;
+        let bestScore = 0;
+        let allContours = new cv.MatVector();
+        
+        // Collect all contours from all methods
+        for (const result of results) {
+            for (let i = 0; i < result.contours.size(); i++) {
+                const contour = result.contours.get(i);
+                const score = this.scoreContour(contour, width, height) * result.confidence;
+                allContours.push_back(contour.clone());
+                
+                if (score > bestScore) {
+                    bestScore = score;
+                    if (bestContour) bestContour.delete();
+                    bestContour = contour.clone();
+                }
+            }
+        }
+        
+        // Clean up allContours
+        allContours.delete();
+        
+        return {
+            documentContour: bestContour,
+            confidence: bestScore
+        };
+    }
+
+    // Score contour based on document-like properties
+    scoreContour(contour, imageWidth, imageHeight) {
+        const area = cv.contourArea(contour);
+        const imageArea = imageWidth * imageHeight;
+        const rect = cv.boundingRect(contour);
+        
+        // Must be reasonable size (10% to 90% of image)
+        const areaRatio = area / imageArea;
+        if (areaRatio < 0.1 || areaRatio > 0.9) return 0;
+        
+        // Check if near borders (documents shouldn't touch edges)
+        const margin = Math.min(imageWidth, imageHeight) * 0.05;
+        if (rect.x < margin || rect.y < margin || 
+            rect.x + rect.width > imageWidth - margin ||
+            rect.y + rect.height > imageHeight - margin) {
+            return 0;
+        }
+        
+        // Prefer rectangular shapes
+        const epsilon = 0.02 * cv.arcLength(contour, true);
+        const approx = new cv.Mat();
+        cv.approxPolyDP(contour, approx, epsilon, true);
+        
+        let shapeScore = 0;
+        if (approx.rows === 4) {
+            shapeScore = 1.0; // Perfect quadrilateral
+        } else if (approx.rows >= 4 && approx.rows <= 6) {
+            shapeScore = 0.8; // Close to quadrilateral
+        } else {
+            shapeScore = 0.3; // Not very rectangular
+        }
+        
+        // Aspect ratio score (documents are typically rectangular)
+        const aspectRatio = rect.width / rect.height;
+        const aspectScore = (aspectRatio > 0.5 && aspectRatio < 2.0) ? 1.0 : 0.5;
+        
+        approx.delete();
+        
+        return areaRatio * shapeScore * aspectScore;
+    }
+
+    // Clean up detection results
+    cleanupDetectionResults(results) {
+        for (const result of results) {
+            if (result.contours) result.contours.delete();
         }
     }
 
@@ -224,12 +530,10 @@ class DocumentCapture {
                 rect.x + rect.width > imageWidth - borderMargin ||
                 rect.y + rect.height > imageHeight - borderMargin
             ) {
-                contour.delete();
                 continue;
             }
             const area = cv.contourArea(contour);
             if (area < minArea) {
-                contour.delete();
                 continue;
             }
             const epsilon = 0.02 * cv.arcLength(contour, true);
@@ -243,41 +547,36 @@ class DocumentCapture {
                 largestQuad = approx.clone();
             }
             approx.delete();
-            contour.delete();
         }
         return largestQuad;
     }
 
-    // Helper method to calculate perspective transformation
-    calculatePerspectiveTransform(quadContour, imageWidth, imageHeight) {
+    // Enhanced perspective transformation calculation for irregular contours
+    calculatePerspectiveTransform(contour, imageWidth, imageHeight) {
         try {
-            const points = [];
-            for (let i = 0; i < 4; i++) {
-                const point = quadContour.data32S.slice(i * 2, i * 2 + 2);
-                points.push({ x: point[0], y: point[1] });
+            // First, try to get the best quadrilateral approximation
+            let points = this.extractBestQuadrilateral(contour);
+            
+            // If we don't have exactly 4 points, create them from bounding rectangle
+            if (!points || points.length !== 4) {
+                const rect = cv.boundingRect(contour);
+                points = [
+                    { x: rect.x, y: rect.y },
+                    { x: rect.x + rect.width, y: rect.y },
+                    { x: rect.x + rect.width, y: rect.y + rect.height },
+                    { x: rect.x, y: rect.y + rect.height }
+                ];
+            }
+            
+            // Validate points are reasonable
+            if (!this.validateQuadrilateral(points, imageWidth, imageHeight)) {
+                return null;
             }
             
             const orderedPoints = this.orderPoints(points);
             
-            const widthA = Math.sqrt(
-                Math.pow(orderedPoints[2].x - orderedPoints[3].x, 2) +
-                Math.pow(orderedPoints[2].y - orderedPoints[3].y, 2)
-            );
-            const widthB = Math.sqrt(
-                Math.pow(orderedPoints[1].x - orderedPoints[0].x, 2) +
-                Math.pow(orderedPoints[1].y - orderedPoints[0].y, 2)
-            );
-            const maxWidth = Math.max(widthA, widthB);
-            
-            const heightA = Math.sqrt(
-                Math.pow(orderedPoints[1].x - orderedPoints[2].x, 2) +
-                Math.pow(orderedPoints[1].y - orderedPoints[2].y, 2)
-            );
-            const heightB = Math.sqrt(
-                Math.pow(orderedPoints[0].x - orderedPoints[3].x, 2) +
-                Math.pow(orderedPoints[0].y - orderedPoints[3].y, 2)
-            );
-            const maxHeight = Math.max(heightA, heightB);
+            // Calculate target dimensions with aspect ratio preservation
+            const dimensions = this.calculateTargetDimensions(orderedPoints);
             
             const srcPoints = cv.matFromArray(4, 1, cv.CV_32FC2, [
                 orderedPoints[0].x, orderedPoints[0].y,
@@ -288,9 +587,9 @@ class DocumentCapture {
             
             const dstPoints = cv.matFromArray(4, 1, cv.CV_32FC2, [
                 0, 0,
-                maxWidth - 1, 0,
-                maxWidth - 1, maxHeight - 1,
-                0, maxHeight - 1
+                dimensions.width - 1, 0,
+                dimensions.width - 1, dimensions.height - 1,
+                0, dimensions.height - 1
             ]);
             
             const transformMatrix = cv.getPerspectiveTransform(srcPoints, dstPoints);
@@ -306,15 +605,177 @@ class DocumentCapture {
             
             return {
                 matrix: transformArray,
-                outputWidth: Math.round(maxWidth),
-                outputHeight: Math.round(maxHeight),
+                outputWidth: Math.round(dimensions.width),
+                outputHeight: Math.round(dimensions.height),
                 sourcePoints: orderedPoints
             };
             
         } catch (error) {
-            console.error('Error calculating perspective transform:', error);
             return null;
         }
+    }
+
+    // Extract best quadrilateral from irregular contour
+    extractBestQuadrilateral(contour) {
+        try {
+            // Try different epsilon values to find the best quadrilateral approximation
+            const epsilons = [0.01, 0.02, 0.03, 0.05, 0.08];
+            
+            for (const epsilon of epsilons) {
+                const arcLength = cv.arcLength(contour, true);
+                const approx = new cv.Mat();
+                cv.approxPolyDP(contour, approx, epsilon * arcLength, true);
+                
+                if (approx.rows === 4) {
+                    const points = [];
+                    for (let i = 0; i < 4; i++) {
+                        const point = approx.data32S.slice(i * 2, i * 2 + 2);
+                        points.push({ x: point[0], y: point[1] });
+                    }
+                    approx.delete();
+                    return points;
+                }
+                approx.delete();
+            }
+            
+            // If no good quadrilateral found, use convex hull approach
+            const hull = new cv.Mat();
+            cv.convexHull(contour, hull);
+            
+            if (hull.rows >= 4) {
+                // Take the 4 most extreme points from convex hull
+                const hullPoints = [];
+                for (let i = 0; i < hull.rows; i++) {
+                    const point = hull.data32S.slice(i * 2, i * 2 + 2);
+                    hullPoints.push({ x: point[0], y: point[1] });
+                }
+                hull.delete();
+                
+                // Select 4 corner points using distance-based selection
+                return this.selectCornerPoints(hullPoints);
+            }
+            
+            hull.delete();
+            return null;
+            
+        } catch (error) {
+            return null;
+        }
+    }
+
+    // Select 4 corner points from a set of points
+    selectCornerPoints(points) {
+        if (points.length <= 4) return points;
+        
+        // Find centroid
+        const cx = points.reduce((sum, p) => sum + p.x, 0) / points.length;
+        const cy = points.reduce((sum, p) => sum + p.y, 0) / points.length;
+        
+        // Find points in 4 quadrants
+        const quadrants = [[], [], [], []]; // TL, TR, BR, BL
+        
+        for (const point of points) {
+            if (point.x <= cx && point.y <= cy) quadrants[0].push(point); // Top-left
+            else if (point.x > cx && point.y <= cy) quadrants[1].push(point); // Top-right
+            else if (point.x > cx && point.y > cy) quadrants[2].push(point); // Bottom-right
+            else quadrants[3].push(point); // Bottom-left
+        }
+        
+        const corners = [];
+        for (let i = 0; i < 4; i++) {
+            if (quadrants[i].length > 0) {
+                // Find the most extreme point in each quadrant
+                let extremePoint = quadrants[i][0];
+                let maxDistance = this.distanceFromCenter(extremePoint, cx, cy);
+                
+                for (const point of quadrants[i]) {
+                    const distance = this.distanceFromCenter(point, cx, cy);
+                    if (distance > maxDistance) {
+                        maxDistance = distance;
+                        extremePoint = point;
+                    }
+                }
+                corners.push(extremePoint);
+            } else {
+                // If no point in quadrant, use a reasonable default
+                const defaultPoints = [
+                    { x: cx - 50, y: cy - 50 }, // TL
+                    { x: cx + 50, y: cy - 50 }, // TR
+                    { x: cx + 50, y: cy + 50 }, // BR
+                    { x: cx - 50, y: cy + 50 }  // BL
+                ];
+                corners.push(defaultPoints[i]);
+            }
+        }
+        
+        return corners;
+    }
+
+    // Validate quadrilateral points
+    validateQuadrilateral(points, imageWidth, imageHeight) {
+        if (!points || points.length !== 4) return false;
+        
+        // Check if all points are within image bounds
+        for (const point of points) {
+            if (point.x < 0 || point.y < 0 || point.x >= imageWidth || point.y >= imageHeight) {
+                return false;
+            }
+        }
+        
+        // Check if the quadrilateral has reasonable area
+        const area = this.calculatePolygonArea(points);
+        const imageArea = imageWidth * imageHeight;
+        
+        return area > imageArea * 0.05 && area < imageArea * 0.95;
+    }
+
+    // Calculate polygon area using shoelace formula
+    calculatePolygonArea(points) {
+        let area = 0;
+        const n = points.length;
+        
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            area += points[i].x * points[j].y;
+            area -= points[j].x * points[i].y;
+        }
+        
+        return Math.abs(area) / 2;
+    }
+
+    // Calculate target dimensions for perspective transform
+    calculateTargetDimensions(orderedPoints) {
+        const widthA = Math.sqrt(
+            Math.pow(orderedPoints[2].x - orderedPoints[3].x, 2) +
+            Math.pow(orderedPoints[2].y - orderedPoints[3].y, 2)
+        );
+        const widthB = Math.sqrt(
+            Math.pow(orderedPoints[1].x - orderedPoints[0].x, 2) +
+            Math.pow(orderedPoints[1].y - orderedPoints[0].y, 2)
+        );
+        const maxWidth = Math.max(widthA, widthB);
+        
+        const heightA = Math.sqrt(
+            Math.pow(orderedPoints[1].x - orderedPoints[2].x, 2) +
+            Math.pow(orderedPoints[1].y - orderedPoints[2].y, 2)
+        );
+        const heightB = Math.sqrt(
+            Math.pow(orderedPoints[0].x - orderedPoints[3].x, 2) +
+            Math.pow(orderedPoints[0].y - orderedPoints[3].y, 2)
+        );
+        const maxHeight = Math.max(heightA, heightB);
+        
+        // Ensure reasonable minimum dimensions
+        const minDimension = 200;
+        return {
+            width: Math.max(maxWidth, minDimension),
+            height: Math.max(maxHeight, minDimension)
+        };
+    }
+
+    // Helper function for distance calculation
+    distanceFromCenter(point, cx, cy) {
+        return Math.sqrt(Math.pow(point.x - cx, 2) + Math.pow(point.y - cy, 2));
     }
 
     // Helper method to order points
@@ -428,65 +889,88 @@ class DocumentCapture {
         return null;
     }
 
-    // Enhanced cropAndEnhance method
+    // Enhanced cropAndEnhance method with robust irregular contour handling
     async cropAndEnhance(imageDataUrl, bounds, perspectiveTransform = null) {
         return new Promise((resolve) => {
             const img = new Image();
             img.onload = () => {
                 let canvas, ctx;
+                let success = false;
                 
-                if (perspectiveTransform && typeof cv !== 'undefined') {
+                // Method 1: Try perspective transformation if available and valid
+                if (perspectiveTransform && typeof cv !== 'undefined' && perspectiveTransform.sourcePoints && perspectiveTransform.sourcePoints.length === 4) {
                     canvas = document.createElement('canvas');
                     ctx = canvas.getContext('2d');
-                    
                     canvas.width = img.width;
                     canvas.height = img.height;
                     ctx.drawImage(img, 0, 0);
                     
                     const correctedCanvas = this.applyPerspectiveTransform(canvas, perspectiveTransform);
-                    if (correctedCanvas) {
+                    if (correctedCanvas && correctedCanvas.width > 0 && correctedCanvas.height > 0) {
                         canvas = correctedCanvas;
                         ctx = canvas.getContext('2d');
-                    } else {
-                        // If perspective transform fails, fall back to simple cropping
-                        const tempCanvas = document.createElement('canvas');
-                        const tempCtx = tempCanvas.getContext('2d');
-                        
-                        tempCanvas.width = bounds.width;
-                        tempCanvas.height = bounds.height;
-                        
-                        tempCtx.drawImage(
-                            img,
-                            bounds.x, bounds.y, bounds.width, bounds.height,
-                            0, 0, bounds.width, bounds.height
-                        );
-                        
-                        canvas = tempCanvas;
-                        ctx = tempCtx;
+                        success = true;
                     }
-                } else {
-                    // Simple cropping without perspective correction
-                    canvas = document.createElement('canvas');
-                    ctx = canvas.getContext('2d');
-                    
-                    canvas.width = bounds.width;
-                    canvas.height = bounds.height;
-                    
-                    ctx.drawImage(
-                        img,
-                        bounds.x, bounds.y, bounds.width, bounds.height,
-                        0, 0, bounds.width, bounds.height
-                    );
                 }
                 
+                // Method 2: Smart bounding box cropping with padding
+                if (!success && bounds) {
+                    canvas = this.performSmartCrop(img, bounds);
+                    ctx = canvas.getContext('2d');
+                    success = true;
+                }
+                
+                // Method 3: Fallback - return original with enhancement
+                if (!success) {
+                    canvas = document.createElement('canvas');
+                    ctx = canvas.getContext('2d');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                }
+                
+                // Apply image enhancement
                 if (this.options.enhanceImage) {
                     this.enhanceImage(ctx, canvas.width, canvas.height);
                 }
                 
                 resolve(canvas.toDataURL('image/jpeg', 0.9));
             };
+            
+            img.onerror = () => {
+                resolve(imageDataUrl); // Return original if loading fails
+            };
+            
             img.src = imageDataUrl;
         });
+    }
+
+    // Smart cropping method for irregular bounds
+    performSmartCrop(img, bounds) {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Add intelligent padding based on detected bounds
+        const padding = Math.min(bounds.width, bounds.height) * 0.05; // 5% padding
+        
+        // Ensure bounds don't exceed image dimensions
+        const cropX = Math.max(0, bounds.x - padding);
+        const cropY = Math.max(0, bounds.y - padding);
+        const cropWidth = Math.min(img.width - cropX, bounds.width + padding * 2);
+        const cropHeight = Math.min(img.height - cropY, bounds.height + padding * 2);
+        
+        // Set canvas size to cropped dimensions
+        canvas.width = cropWidth;
+        canvas.height = cropHeight;
+        
+        // Draw the cropped region
+        ctx.drawImage(
+            img,
+            cropX, cropY, cropWidth, cropHeight,  // Source rectangle
+            0, 0, cropWidth, cropHeight           // Destination rectangle
+        );
+        
+        return canvas;
     }
 
     // Apply perspective transformation using OpenCV
@@ -517,7 +1001,6 @@ class DocumentCapture {
             return outputCanvas;
             
         } catch (error) {
-            console.error('Error applying perspective transform:', error);
             return null;
         }
     }

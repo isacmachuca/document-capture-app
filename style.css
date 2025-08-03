@@ -48,7 +48,6 @@ body {
     line-height: 1;
 }
 
-/* Step Indicators */
 .step-indicators {
     display: flex;
     gap: 32px;
